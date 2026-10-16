@@ -74,8 +74,8 @@ nix build .
 nix profile add .
 ```
 
-The flake exposes `packages.<system>.{default,jagex-auth}` and matching apps for
-`x86_64-linux` and `aarch64-linux`. The package's `wrapLaunch` function wraps an
+The flake exposes `packages.<system>.{default,jagex-auth}` for `x86_64-linux`
+and `aarch64-linux`. The package's `wrapLaunch` function wraps an
 existing client. Add this input to your flake:
 
 ```nix

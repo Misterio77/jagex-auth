@@ -4,10 +4,8 @@
   makeDesktopItem,
   makeWrapper,
   python3,
-  runCommand,
   stdenvNoCC,
   symlinkJoin,
-  writeTextFile,
 }: let
   desktopItem = makeDesktopItem {
     name = "jagex-auth-handler";
@@ -71,11 +69,6 @@ in
         inherit (package) meta;
         passthru = (package.passthru or {}) // {unwrapped = package;};
       };
-
-    passthru.tests.launch = import ./tests/wrapper.nix {
-      inherit lib makeDesktopItem python3 runCommand symlinkJoin writeTextFile;
-      jagex-auth = finalAttrs.finalPackage;
-    };
 
     meta = {
       description = "Authenticate RuneScape clients with a Jagex account";

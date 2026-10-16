@@ -23,25 +23,14 @@
       default = jagex-auth;
     });
 
-    apps = forAllSystems (system: let
-      app = {
-        type = "app";
-        program = nixpkgs.lib.getExe self.packages.${system}.jagex-auth;
-        meta.description = self.packages.${system}.jagex-auth.meta.description;
+    checks = forAllSystems (system: let
+      wrapperCheck = pkgsFor.${system}.callPackage ./tests/wrapper.nix {
+        inherit (self.packages.${system}) jagex-auth;
       };
     in {
-      jagex-auth = app;
-      default = app;
-    });
-
-    checks = forAllSystems (system: {
       package = self.packages.${system}.jagex-auth;
-      launch = self.packages.${system}.jagex-auth.tests.launch;
-      unfree-launch = import ./tests/wrapper.nix {
-        inherit (pkgsFor.${system}) lib makeDesktopItem python3 runCommand symlinkJoin writeTextFile;
-        jagex-auth = self.packages.${system}.jagex-auth;
-        clientLicense = nixpkgs.lib.licenses.unfree;
-      };
+      launch = wrapperCheck;
+      unfree-launch = wrapperCheck.override {clientLicense = nixpkgs.lib.licenses.unfree;};
     });
 
     devShells = forAllSystems (system: let

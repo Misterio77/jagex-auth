@@ -35,11 +35,16 @@ def token(payload=None, *, headers=None):
     return encode_token(claims, headers)
 
 
-class AuthTests(unittest.TestCase):
+class AuthTestCase(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temporary.cleanup)
-        self.data = Path(self.temporary.name) / "jagex-auth"
+        self.root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.data = self.root / "jagex-auth"
+        self.env = {
+            **os.environ,
+            "HOME": str(self.root),
+            "XDG_DATA_HOME": str(self.root),
+            "PYTHONPATH": str(Path(auth.__file__).parent.parent),
+        }
         for name, value in {
             "DATA_DIR": self.data,
             "CALLBACK_FILE": self.data / "auth-callback.json",
@@ -48,9 +53,7 @@ class AuthTests(unittest.TestCase):
             "AUTH_LOCK": self.data / "authorize.lock",
             "CALLBACK_LOCK": self.data / "callback.lock",
         }.items():
-            patcher = patch.object(auth, name, value)
-            patcher.start()
-            self.addCleanup(patcher.stop)
+            self.enterContext(patch.object(auth, name, value))
         # Fail closed if a test unexpectedly reaches any real network/browser.
         self.enterContext(patch.object(auth.HTTP_OPENER, "open", side_effect=AssertionError("Unexpected network I/O")))
         self.enterContext(patch("webbrowser.open", side_effect=AssertionError("Unexpected browser I/O")))
@@ -60,6 +63,8 @@ class AuthTests(unittest.TestCase):
     def callback(self, **params):
         return "rshub://auth/callback#" + urllib.parse.urlencode(params)
 
+
+class AuthTests(AuthTestCase):
     def test_auth_url_binds_state_nonce_and_client(self):
         parsed = urllib.parse.urlparse(auth.make_auth_url("state", "nonce"))
         self.assertEqual(f"{parsed.scheme}://{parsed.netloc}{parsed.path}", auth.AUTH_ENDPOINT)
@@ -148,7 +153,7 @@ class AuthTests(unittest.TestCase):
                     auth.get_accounts("session")
 
     def test_character_selection(self):
-        accounts = [{"accountId": "a"}, {"accountId": "b"}]
+        accounts = [{"accountId": "a", "displayName": "A"}, {"accountId": "b", "displayName": "B"}]
         self.assertEqual(auth.choose_account(accounts[:1]), accounts[0])
         with patch("builtins.input", side_effect=["bad", "", "²", "0", "3", "2"]):
             self.assertEqual(auth.choose_account(accounts), accounts[1])
@@ -208,13 +213,7 @@ class AuthTests(unittest.TestCase):
     def test_entry_point_help_without_credentials(self):
         result = subprocess.run(
             [sys.executable, "-m", "jagex_auth", "--help"],
-            env={
-                **os.environ,
-                "HOME": self.temporary.name,
-                "XDG_DATA_HOME": self.temporary.name,
-                "PYTHONPATH": str(Path(auth.__file__).parent.parent),
-            },
-            cwd=self.temporary.name,
+            env=self.env, cwd=self.root,
             capture_output=True, text=True, timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -1,6 +1,6 @@
 import argparse
 import base64
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import json
 import os
@@ -151,37 +151,32 @@ def authentication_params(value: str, expected_state: str) -> dict[str, str]:
 
 @contextmanager
 def file_lock(path: Path):
+    # Do not unlink lock files: waiters must keep locking the same inode.
     fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
             raise SystemExit("Unsafe authorization lock file")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            yield
-        finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+        yield
     finally:
-        os.close(fd)
+        os.close(fd)  # Closing our only fd also releases the lock.
 
 
 @contextmanager
 def callback_guard():
     # Short critical section; bounded retry avoids hanging on a wedged handler.
     deadline = time.monotonic() + 5
-    while True:
-        lock = file_lock(CALLBACK_LOCK)
-        try:
-            lock.__enter__()
-            break
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                raise SystemExit("Authentication callback busy; please retry") from None
-            time.sleep(0.01)
-    try:
+    with ExitStack() as locks:
+        while True:
+            try:
+                locks.enter_context(file_lock(CALLBACK_LOCK))
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SystemExit("Authentication callback busy; please retry") from None
+                time.sleep(0.01)
         yield
-    finally:
-        lock.__exit__(None, None, None)
 
 
 @contextmanager
@@ -367,8 +362,7 @@ def choose_account(accounts: list[dict]) -> dict:
 
     print("\nAvailable RuneScape characters:", file=sys.stderr)
     for index, account in enumerate(accounts, start=1):
-        name = account.get("displayName") or "<unnamed>"
-        print(f"  {index}. {name} ({account.get('accountId')})", file=sys.stderr)
+        print(f"  {index}. {account['displayName']} ({account['accountId']})", file=sys.stderr)
 
     while True:
         try:
@@ -481,12 +475,11 @@ def launch(args: argparse.Namespace) -> None:
 @contextmanager
 def authorization_attempt():
     ensure_data_dir()
-    lock = file_lock(AUTH_LOCK)
-    try:
-        lock.__enter__()
-    except BlockingIOError:
-        raise SystemExit("Another authorization is already running") from None
-    try:
+    with ExitStack() as locks:
+        try:
+            locks.enter_context(file_lock(AUTH_LOCK))
+        except BlockingIOError:
+            raise SystemExit("Another authorization is already running") from None
         try:
             state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
             with callback_guard():
@@ -499,9 +492,6 @@ def authorization_attempt():
             with callback_guard():
                 PENDING_FILE.unlink(missing_ok=True)
                 CALLBACK_FILE.unlink(missing_ok=True)
-    finally:
-        # Do not unlink lock files: waiters must keep locking the same inode.
-        lock.__exit__(None, None, None)
 
 
 @contextmanager
@@ -572,8 +562,7 @@ def main() -> None:
     )
     commands = parser.add_subparsers(required=True)
 
-    authorize_parser = commands.add_parser("authorize", help="authenticate with Jagex")
-    authorize_parser.set_defaults(func=authorize)
+    commands.add_parser("authorize", help="authenticate with Jagex").set_defaults(func=authorize)
 
     callback_parser = commands.add_parser(
         "handle-url", help="receive the browser authentication callback"

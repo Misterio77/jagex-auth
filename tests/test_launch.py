@@ -7,30 +7,16 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
-import tempfile
 import unittest
 from unittest.mock import patch
 
 import jagex_auth as auth
+from test_auth import AuthTestCase
 
 
-class LaunchTests(unittest.TestCase):
+class LaunchTests(AuthTestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
-        self.data = self.root / "jagex-auth"
-        for name, value in {
-            "DATA_DIR": self.data,
-            "CREDENTIALS_FILE": self.data / "credentials.json",
-        }.items():
-            self.enterContext(patch.object(auth, name, value))
-        self.env = {
-            **os.environ,
-            "HOME": str(self.root),
-            "XDG_DATA_HOME": str(self.root),
-            "PYTHONPATH": str(Path(auth.__file__).parent.parent),
-        }
+        super().setUp()
         self.account = {"accountId": "character", "displayName": "A Name"}
 
     def run_cli(self, *args):

@@ -1,4 +1,3 @@
-# Note: vibecoded (pi running gpt 5.5)
 {
   copyDesktopItems,
   lib,
@@ -27,8 +26,6 @@ in
       fileset = lib.fileset.unions [
         ./jagex_auth
         ./LICENSE
-        ./README.md
-        ./SECURITY.md
         ./tests
       ];
     };

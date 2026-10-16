@@ -5,7 +5,6 @@ from email.message import Message
 import io
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
@@ -18,14 +17,10 @@ import urllib.request
 import urllib.response
 
 import jagex_auth as auth
-import test_auth as fixtures
-from test_auth import encode_token, token
+from test_auth import AuthTestCase, encode_token, token
 
 
-class HardeningTests(unittest.TestCase):
-    setUp = fixtures.AuthTests.setUp
-    callback = fixtures.AuthTests.callback
-
+class HardeningTests(AuthTestCase):
     def handle(self, url):
         auth.handle_url(argparse.Namespace(url=url))
 
@@ -370,13 +365,11 @@ class HardeningTests(unittest.TestCase):
             pass
 
     def test_simultaneous_callbacks_only_deliver_once(self):
-        env = {**os.environ, "HOME": self.temporary.name, "XDG_DATA_HOME": self.temporary.name,
-               "PYTHONPATH": str(Path(auth.__file__).parent.parent)}
         with auth.authorization_attempt() as (state, _):
             url = self.callback(state=state, id_token="id")
             children = [subprocess.Popen(
                 [sys.executable, "-m", "jagex_auth", "handle-url", url],
-                env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             ) for _ in range(2)]
             try:
                 results = [child.communicate(timeout=10) for child in children]
@@ -389,14 +382,12 @@ class HardeningTests(unittest.TestCase):
                         child.communicate(timeout=10)
 
     def test_cross_process_callbacks_and_stale_recovery(self):
-        env = {**os.environ, "HOME": self.temporary.name, "XDG_DATA_HOME": self.temporary.name,
-               "PYTHONPATH": str(Path(auth.__file__).parent.parent)}
         with auth.authorization_attempt() as (state, _):
-            result = subprocess.run([sys.executable, "-m", "jagex_auth", "handle-url", self.callback(state=state, id_token="id")], env=env, capture_output=True, text=True, timeout=10)
+            result = subprocess.run([sys.executable, "-m", "jagex_auth", "handle-url", self.callback(state=state, id_token="id")], env=self.env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("id_token=id", auth.wait_for_authentication(timeout=1))
         # Simulate abrupt termination: kernel releases locks but files may remain.
-        child = subprocess.Popen([sys.executable, "-c", "import jagex_auth as a,time; c=a.authorization_attempt(); c.__enter__(); print('ready',flush=True); time.sleep(30)"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        child = subprocess.Popen([sys.executable, "-c", "import jagex_auth as a,time; c=a.authorization_attempt(); c.__enter__(); print('ready',flush=True); time.sleep(30)"], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             self.assertEqual(child.stdout.readline().strip(), "ready")
             child.kill()

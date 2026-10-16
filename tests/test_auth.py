@@ -27,8 +27,9 @@ def encode_token(claims, headers=None):
 
 
 def token(payload=None, *, headers=None):
+    # Realistic claims; only nonce is checked locally, the rest is the server's job.
     claims = {
-        "iss": auth.ISSUER, "aud": auth.CLIENT_ID, "iat": int(time.time()),
+        "iss": "https://account.jagex.com/", "aud": auth.CLIENT_ID, "iat": int(time.time()),
         "exp": int(time.time()) + 300, "sub": "subject", "nickname": "User", "nonce": "nonce",
         **(payload or {}),
     }
@@ -89,8 +90,11 @@ class AuthTests(AuthTestCase):
             with self.subTest(url=url), self.assertRaises(SystemExit):
                 auth.authentication_params(url, "s")
 
-    def test_unverified_claims_and_malformed_tokens(self):
-        self.assertEqual(auth.decode_id_token(token(), "nonce")["sub"], "subject")
+    def test_nonce_binding_and_malformed_tokens(self):
+        auth.check_nonce(token(), "nonce")
+        for claims in ({"nonce": "wrong"}, {"nonce": None}, {"nonce": ["nonce"]}):
+            with self.subTest(claims=claims), self.assertRaisesRegex(SystemExit, "nonce mismatch"):
+                auth.check_nonce(token(claims), "nonce")
         nested = b"[" * 1500 + b"0" + b"]" * 1500
         nested_tokens = [
             ".".join(base64.urlsafe_b64encode(part).decode().rstrip("=") for part in parts)
@@ -98,7 +102,7 @@ class AuthTests(AuthTestCase):
         ]
         for value in ("bad", "a.!.b", "x" * (auth.MAX_CALLBACK + 1), encode_token([]), "e30.e30.", *nested_tokens):
             with self.subTest(value=value[:80]), self.assertRaises(SystemExit):
-                auth.decode_id_token(value, "nonce")
+                auth.check_nonce(value, "nonce")
 
     def test_request_json_serializes_request(self):
         with patch.object(auth.HTTP_OPENER, "open", return_value=io.BytesIO(b'{"ok": true}')) as request:

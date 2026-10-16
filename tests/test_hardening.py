@@ -8,7 +8,6 @@ import os
 import signal
 import subprocess
 import sys
-import time
 import unittest
 from unittest.mock import patch
 import urllib.error
@@ -23,32 +22,17 @@ class HardeningTests(AuthTestCase):
     def handle(self, url):
         auth.handle_url(argparse.Namespace(url=url))
 
-    def test_inconsistent_unverified_claims(self):
-        changes = [
-            {"iss": "https://evil.invalid/"}, {"aud": "wrong"},
-            {"exp": int(time.time()) - 120}, {"iat": int(time.time()) + 120},
-            {"exp": None}, {"iat": True}, {"nbf": "0"},
-            {"nonce": "wrong"}, {"nonce": None},
-            {"sub": ""}, {"nickname": []}, {"azp": "wrong"},
-            {"aud": [auth.CLIENT_ID, "other"]},
-        ]
-        for claims in changes:
-            with self.subTest(claims=claims), self.assertRaises(SystemExit):
-                auth.decode_id_token(token(claims), "nonce")
-
-    def test_missing_required_claims(self):
-        for claim in ("exp", "iat", "sub", "iss", "aud", "nonce"):
-            value = auth.decode_id_token(token(), "nonce")
-            del value[claim]
-            with self.subTest(claim=claim), self.assertRaises(SystemExit):
-                auth.decode_id_token(encode_token(value), "nonce")
-
-    def test_decoding_is_not_signature_verification_and_never_fetches_keys(self):
-        # An arbitrary signature passes local consistency checks, not login.
-        encoded = token(headers={"alg": "RS256", "kid": "unknown", "jku": "https://evil.invalid/"})
+    def test_nonce_check_ignores_other_claims_and_never_fetches_keys(self):
+        # Expired, wrong-audience, or oddly signed tokens are the server's call, not ours.
+        encoded = token(
+            {"iss": "https://evil.invalid/", "aud": "wrong", "exp": 0},
+            headers={"alg": "none", "kid": "unknown", "jku": "https://evil.invalid/"},
+        )
         with patch.object(auth, "request_json") as request:
-            self.assertEqual(auth.decode_id_token(encoded, "nonce")["sub"], "subject")
+            auth.check_nonce(encoded, "nonce")
         request.assert_not_called()
+        with self.assertRaisesRegex(SystemExit, "nonce"):
+            auth.check_nonce(encode_token({"sub": "subject"}), "nonce")
 
     def test_server_rejection_or_failed_character_listing_never_saves_login(self):
         auth.write_credentials("existing", {"accountId": "c", "displayName": "Name"})

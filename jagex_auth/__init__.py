@@ -3,7 +3,6 @@ import base64
 from contextlib import contextmanager
 import json
 import os
-import re
 import secrets
 import select
 import signal
@@ -22,7 +21,6 @@ CLIENT_ID = "com_jagex_auth_desktop_launcher_rs_hub"
 REDIRECT_URI = "https://account.jagex.com/en-GB/launcher/successful-login"
 SESSION_ENDPOINT = "https://auth.runescape.com/game-session/v1/sessions"
 ACCOUNTS_ENDPOINT = "https://auth.runescape.com/game-session/v2/accounts"
-ISSUER = "https://account.jagex.com/"
 AUTH_TIMEOUT = 300
 MAX_CALLBACK = 16384
 MAX_PRIVATE_JSON = 65536
@@ -178,50 +176,25 @@ def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
     raise SystemExit("Authentication timed out; run 'jagex-auth authorize' again")
 
 
-def decode_id_token(token: str, nonce: str) -> dict:
-    """Check unverified claims for consistency, NOT authenticity.
+def check_nonce(token: str, nonce: str) -> None:
+    """Bind the token to this attempt. This is NOT signature verification.
 
-    Only Jagex's successful session exchange and character listing establish
-    authentication. Do not use these decoded claims to authorize anything.
+    Only Jagex's session exchange and character listing establish authentication;
+    every other claim is left to the server, which enforces them anyway.
     """
     try:
-        if not isinstance(token, str) or len(token) > MAX_CALLBACK:
-            raise ValueError("Token too large or invalid")
         parts = token.split(".")
-        if len(parts) != 3 or any(not re.fullmatch(r"[A-Za-z0-9_-]+", p) for p in parts):
-            raise ValueError("Invalid JWT encoding")
-        decoded = [base64.b64decode(p + "=" * (-len(p) % 4), altchars=b"-_", validate=True) for p in parts]
-        header, payload = (json.loads(part) for part in decoded[:2])
-        if not isinstance(header, dict) or not isinstance(payload, dict):
-            raise ValueError("Invalid JWT objects")
-        if payload.get("iss") != ISSUER:
-            raise ValueError("Unexpected issuer")
-        audience = payload.get("aud")
-        if audience != CLIENT_ID and not (
-            isinstance(audience, list) and audience
-            and all(isinstance(value, str) for value in audience) and CLIENT_ID in audience
-        ):
-            raise ValueError("Unexpected audience")
-        if any(type(payload.get(claim)) is not int for claim in ("iat", "exp")):
-            raise ValueError("Invalid token timestamps")
-        now = time.time()
-        if payload["exp"] <= now - 30 or payload["iat"] > now + 30:
-            raise ValueError("Token expired or issued in the future")
-        if "nbf" in payload and (type(payload["nbf"]) is not int or payload["nbf"] > now + 30):
-            raise ValueError("Invalid token not-before timestamp")
-        if not isinstance(payload.get("nonce"), str) or not secrets.compare_digest(
-            payload["nonce"].encode("utf-8"), nonce.encode("utf-8")
-        ):
-            raise SystemExit("OAuth nonce mismatch")
-        if payload.get("azp", CLIENT_ID) != CLIENT_ID:
-            raise ValueError("Wrong authorized party")
-        if isinstance(audience, list) and len(audience) > 1 and payload.get("azp") != CLIENT_ID:
-            raise ValueError("Missing authorized party")
-        if not all(isinstance(payload.get(k), str) and payload[k] for k in ("sub", "nickname")):
-            raise ValueError("Missing account information")
-        return payload
-    except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
-        raise SystemExit("Malformed or inconsistent Jagex ID token (not signature-verified locally)") from None
+        if len(token) > MAX_CALLBACK or len(parts) != 3:
+            raise ValueError("Invalid JWT")
+        payload = json.loads(base64.b64decode(parts[1] + "=" * (-len(parts[1]) % 4), altchars=b"-_", validate=True))
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid JWT payload")
+    except (ValueError, RecursionError):
+        raise SystemExit("Malformed Jagex ID token") from None
+    if not isinstance(payload.get("nonce"), str) or not secrets.compare_digest(
+        payload["nonce"].encode("utf-8"), nonce.encode("utf-8")
+    ):
+        raise SystemExit("OAuth nonce mismatch")
 
 
 def get_game_session(id_token: str) -> str:
@@ -410,11 +383,11 @@ def authorize(_args: argparse.Namespace) -> None:
             print("Opening Jagex login in your browser.", file=sys.stderr)
             open_browser(make_auth_url(state, nonce))
             params = authentication_params(wait_for_authentication(), state)
-            payload = decode_id_token(params["id_token"], nonce)
+            check_nonce(params["id_token"], nonce)
             session_id = get_game_session(params["id_token"])
             account = choose_account(get_accounts(session_id))
             write_credentials(session_id, account)
-            print(f"Authenticated {payload['nickname']} as {account['displayName']}.", file=sys.stderr)
+            print(f"Authenticated as {account['displayName']}.", file=sys.stderr)
     except (KeyboardInterrupt, EOFError):
         raise SystemExit("Authorization cancelled; credentials may already have been saved") from None
     except (OSError, ValueError):

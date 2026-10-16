@@ -35,21 +35,20 @@ input uses the terminal's normal line editing, so a pasted URL is visible on
 screen and in scrollback; clear it if that matters to you. A browser response
 already delivered wins over concurrent terminal input.
 
-Before exchange, the helper strictly decodes the token and checks unverified
-claims for consistency: issuer, audience, integer expiration/issued-at/optional
-not-before timestamps (30-second clock skew allowance), nonce, nonempty
-subject/nickname, and authorized party (`azp`) if present or required for multiple
-audiences. These are input sanity checks and request binding, **not proof of
-identity**. A forged token with matching claims can pass them; neither its
-header nor decoded account information establishes a login.
+Before exchange, the helper decodes the token payload (without verifying the
+signature) and checks only that its `nonce` matches this attempt. That binds
+the token to the request the helper made; it is **not proof of identity**, and
+issuer, audience, expiry, and signature are left to Jagex, which enforces them
+during the exchange. A forged token with the right nonce passes this check and
+is then rejected by the server.
 
 The authentication authority is Jagex's fixed HTTPS game-session endpoint:
 `https://auth.runescape.com/game-session/v1/sessions`. We require a successful
 exchange of the complete, unchanged ID token and a successful character listing
 using the resulting game session before saving credentials or reporting success.
-Rejection at either step leaves prior credentials unchanged. The token's nickname
-is only used for a status message after those server operations have succeeded;
-character IDs/names come from the authenticated server response.
+Rejection at either step leaves prior credentials unchanged. Nothing from the
+decoded token is displayed or stored; character IDs/names come from the
+authenticated server response.
 
 This deliberately relies on Jagex correctly validating tokens and authorizing
 session creation. We have not independently established every server-side

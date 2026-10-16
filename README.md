@@ -38,9 +38,10 @@ automatic session refresh or local check that a saved session is still valid.
 Arguments following the command are passed through literally. `launch` replaces
 itself with the client, preserving signal and exit-status behavior.
 
-ID tokens are not signature-verified locally. The helper checks response binding
-and unverified claims for consistency, then relies on Jagex's HTTPS session
-exchange and character listing to establish authentication before saving a login.
+ID tokens are not signature-verified locally. The helper only checks that the
+response is bound to its own request (state and nonce), then relies on Jagex's
+HTTPS session exchange and character listing to establish authentication before
+saving a login.
 
 For direct Python use (Python 3.10+ on Linux; standard library only), run from
 the source directory:

@@ -27,8 +27,9 @@ terminal input. Installing the desktop file does
 not necessarily register it as the default handler; check your desktop's URL
 associations. Do not replace an existing handler without considering its users.
 Raw ID tokens are not accepted: paste the complete successful-login URL so its
-state can be checked. Only one authorization can run per data directory; the
-browser callback wait times out after five minutes. Ctrl-C cancels the attempt.
+state can be checked. Run one authorization at a time (there is no locking;
+the last one to finish wins). The wait times out after five minutes. Ctrl-C
+cancels the attempt.
 
 `launch` never prompts or opens a browser. It requires existing credentials;
 if absent or invalid it asks you to run `authorize`. An expired/revoked game

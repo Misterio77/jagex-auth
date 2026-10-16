@@ -60,35 +60,31 @@ not a standalone OIDC verifier or an identity provider for other applications.
 The helper neither refreshes tokens nor checks a saved game session's validity
 before launch; reauthorize when the client rejects a session.
 
-## Callback lifetime and concurrency
+## Callback lifetime
 
-Only one authorization runs per data directory, enforced with a kernel `flock`
-held until it finishes. A second lock serializes short callback/pending-state
-operations, with bounded contention waiting. Lock files are persistent inodes:
-removing them would allow processes to lock different files under the same name.
-
-The authorizer publishes private pending state before opening the browser.
-`handle-url` requires both a live authorizer lock and unexpired pending state,
-validates state, and records at most one response. Browser delivery or manual
-URL consumption closes further delivery. Both input paths subsequently undergo
-the same token checks. The callback wait expires after five minutes, even with
-closed stdin or a partially typed line. HTTP operations have separate 30-second
+There is no locking. One authorization at a time is assumed; if two overlap,
+the one that finishes last wins, and a newer attempt replaces older pending
+state. The authorizer writes its private state before opening the browser.
+`handle-url` reads that state, validates the URL's state binding, and writes
+the response for the authorizer to pick up; a later delivery overwrites an
+earlier one. Both input paths then undergo the same token checks in the
+authorizer. The callback wait expires after five minutes, even with closed
+stdin or a partially typed line. HTTP operations have separate 30-second
 socket timeouts; character selection is interactive and is not covered by the
 browser callback deadline.
 
-Normal completion, exceptions, Ctrl-C, and SIGTERM clean pending/callback files
-and release locks. SIGKILL/power loss can leave files, but the kernel releases
-the lock: callbacks reject that stale attempt and the next authorization replaces
-it. Cleanup can fail if storage becomes inaccessible or a callback process holds
-the guard too long; stale files still do not establish a live authorizer. As with
-any atomic commit, cancellation after credentials were replaced cannot promise
-the prior credentials are still installed.
+Normal completion, exceptions, Ctrl-C, and SIGTERM remove pending/callback
+files. SIGKILL or power loss can leave them; a callback delivered against that
+stale state is simply discarded by the next authorization, which starts fresh.
+As with any atomic commit, cancellation after credentials were replaced cannot
+promise the prior credentials are still installed.
 
 ## Local trust boundary
 
-State lives under the user's private `jagex-auth` data directory. Private JSON
-reads reject symlinks, non-regular files, other owners, loose permissions, and
-oversized files. Writes use unique `0600` temporaries and atomic replacement.
+State lives under the user's private `jagex-auth` data directory, which is
+created or reset to mode `0700` before writes. Private JSON reads reject
+symlinks, non-regular files, other owners, loose permissions, and oversized
+files. Writes use unique `0600` temporaries and atomic replacement.
 Credentials are passed to clients as environment variables, never evaluated as
 shell code or embedded in arguments or Nix outputs. Client arguments are not
 shell-expanded.

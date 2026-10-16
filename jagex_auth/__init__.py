@@ -1,7 +1,6 @@
 import argparse
 import base64
-from contextlib import contextmanager, ExitStack
-import fcntl
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -33,17 +32,13 @@ DATA_DIR = (
 )
 CALLBACK_FILE = DATA_DIR / "auth-callback.json"
 PENDING_FILE = DATA_DIR / "pending.json"
-AUTH_LOCK = DATA_DIR / "authorize.lock"
-CALLBACK_LOCK = DATA_DIR / "callback.lock"
 CREDENTIALS_FILE = DATA_DIR / "credentials.json"
 CREDENTIAL_KEYS = ("JX_SESSION_ID", "JX_CHARACTER_ID", "JX_DISPLAY_NAME")
 
 
 def ensure_data_dir() -> None:
     DATA_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if DATA_DIR.is_symlink() or not DATA_DIR.is_dir():
-        raise SystemExit("Refusing unsafe jagex-auth data directory")
-    DATA_DIR.chmod(0o700)
+    DATA_DIR.chmod(0o700)  # A persisted directory may have been created with a loose mode.
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -109,7 +104,7 @@ def open_browser(url: str) -> None:
         print(f"Open this URL manually:\n{url}", file=sys.stderr)
 
 
-def response_url(value: str, *, handler_only: bool = False) -> urllib.parse.ParseResult:
+def response_url(value: str) -> urllib.parse.ParseResult:
     if not isinstance(value, str) or len(value) > MAX_CALLBACK or any(ord(c) < 32 for c in value):
         raise SystemExit("Invalid Jagex authentication response")
     try:
@@ -117,10 +112,7 @@ def response_url(value: str, *, handler_only: bool = False) -> urllib.parse.Pars
     except ValueError:
         raise SystemExit("Invalid Jagex authentication response") from None
     origin = parsed._replace(fragment="").geturl()
-    allowed = {"rshub://auth/callback"}
-    if not handler_only:
-        allowed.add(REDIRECT_URI)
-    if origin not in allowed:
+    if origin not in {"rshub://auth/callback", REDIRECT_URI}:
         raise SystemExit("Invalid Jagex authentication response URL")
     return parsed
 
@@ -148,49 +140,6 @@ def authentication_params(value: str, expected_state: str) -> dict[str, str]:
     return params
 
 
-@contextmanager
-def file_lock(path: Path):
-    # Do not unlink lock files: waiters must keep locking the same inode.
-    fd = os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-            raise SystemExit("Unsafe authorization lock file")
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
-    finally:
-        os.close(fd)  # Closing our only fd also releases the lock.
-
-
-@contextmanager
-def callback_guard():
-    # Short critical section; bounded retry avoids hanging on a wedged handler.
-    deadline = time.monotonic() + 5
-    with ExitStack() as locks:
-        while True:
-            try:
-                locks.enter_context(file_lock(CALLBACK_LOCK))
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise SystemExit("Authentication callback busy; please retry") from None
-                time.sleep(0.01)
-        yield
-
-
-def consume_browser_callback() -> str | None:
-    # Caller holds callback_guard. A delivered browser response wins over stdin.
-    try:
-        callback = read_private_json(CALLBACK_FILE, MAX_CALLBACK * 2)
-    except FileNotFoundError:
-        return None
-    if not isinstance(callback, dict) or not isinstance(callback.get("url"), str):
-        raise SystemExit("Invalid browser callback file")
-    close_callback_delivery()
-    CALLBACK_FILE.unlink()
-    return callback["url"]
-
-
 def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
     # shortcut: canonical tty lines cap at 4095 bytes; callback URLs are ~1.5 KiB today. Revisit if they grow.
     print("Waiting for browser callback; you can also paste the successful-login URL here:", file=sys.stderr)
@@ -201,10 +150,15 @@ def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
     except (AttributeError, ValueError, OSError):
         stdin = None
     while time.monotonic() < deadline:
-        with callback_guard():
-            callback = consume_browser_callback()
-            if callback is not None:
-                return callback
+        try:
+            callback = read_private_json(CALLBACK_FILE, MAX_CALLBACK * 2)
+        except FileNotFoundError:
+            callback = None
+        if callback is not None:
+            if not isinstance(callback, dict) or not isinstance(callback.get("url"), str):
+                raise SystemExit("Invalid browser callback file")
+            CALLBACK_FILE.unlink(missing_ok=True)
+            return callback["url"]
         if stdin is None:
             time.sleep(0.1)
             continue
@@ -212,34 +166,16 @@ def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
         if readable:
             chunk = os.read(stdin, MAX_CALLBACK + 1)
             buffer += chunk
-            with callback_guard():
-                callback = consume_browser_callback()
-                if callback is not None:
-                    return callback
-                if len(buffer) > MAX_CALLBACK:
-                    raise SystemExit("Authentication response too large")
-                if b"\n" in buffer or (not chunk and buffer):
-                    try:
-                        url = buffer.split(b"\n", 1)[0].rstrip(b"\r").decode("utf-8")
-                    except UnicodeError:
-                        raise SystemExit("Invalid authentication response encoding") from None
-                    pending = read_private_json(PENDING_FILE)
-                    if not isinstance(pending, dict) or pending.get("accepting") is not True:
-                        raise SystemExit("Authentication response already consumed")
-                    close_callback_delivery()
-                    return url
+            if len(buffer) > MAX_CALLBACK:
+                raise SystemExit("Authentication response too large")
+            if b"\n" in buffer or (not chunk and buffer):
+                try:
+                    return buffer.split(b"\n", 1)[0].rstrip(b"\r").decode("utf-8")
+                except UnicodeError:
+                    raise SystemExit("Invalid authentication response encoding") from None
             if not chunk:
                 stdin = None
     raise SystemExit("Authentication timed out; run 'jagex-auth authorize' again")
-
-
-def close_callback_delivery() -> None:
-    # Caller holds callback_guard; terminal and browser delivery share this flag.
-    pending = read_private_json(PENDING_FILE)
-    if not isinstance(pending, dict):
-        raise SystemExit("Invalid pending authorization")
-    pending["accepting"] = False
-    atomic_write_private(PENDING_FILE, json.dumps(pending))
 
 
 def decode_id_token(token: str, nonce: str) -> dict:
@@ -417,7 +353,6 @@ def read_private_json(path: Path, limit: int = MAX_PRIVATE_JSON):
 
 def read_credentials() -> dict[str, str]:
     try:
-        ensure_data_dir()
         return validate_credentials(read_private_json(CREDENTIALS_FILE))
     except FileNotFoundError:
         message = "No saved credentials"
@@ -445,24 +380,16 @@ def launch(args: argparse.Namespace) -> None:
 
 @contextmanager
 def authorization_attempt():
+    # No locking: one authorization at a time is assumed, and a newer attempt replaces older state.
     ensure_data_dir()
-    with ExitStack() as locks:
-        try:
-            locks.enter_context(file_lock(AUTH_LOCK))
-        except BlockingIOError:
-            raise SystemExit("Another authorization is already running") from None
-        try:
-            state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-            with callback_guard():
-                CALLBACK_FILE.unlink(missing_ok=True)
-                atomic_write_private(PENDING_FILE, json.dumps({
-                    "state": state, "expires": time.time() + AUTH_TIMEOUT, "accepting": True,
-                }))
-            yield state, nonce
-        finally:
-            with callback_guard():
-                PENDING_FILE.unlink(missing_ok=True)
-                CALLBACK_FILE.unlink(missing_ok=True)
+    try:
+        CALLBACK_FILE.unlink(missing_ok=True)
+        state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        atomic_write_private(PENDING_FILE, json.dumps({"state": state}))
+        yield state, nonce
+    finally:
+        PENDING_FILE.unlink(missing_ok=True)
+        CALLBACK_FILE.unlink(missing_ok=True)
 
 
 @contextmanager
@@ -495,35 +422,19 @@ def authorize(_args: argparse.Namespace) -> None:
 
 
 def handle_url(args: argparse.Namespace) -> None:
-    response_url(args.url, handler_only=True)
     try:
-        ensure_data_dir()
-        with callback_guard():
-            # A stale pending file is not evidence of a live authorizer.
-            try:
-                with file_lock(AUTH_LOCK):
-                    raise SystemExit("No active authorization; run 'jagex-auth authorize'")
-            except BlockingIOError:
-                pass
-            try:
-                pending = read_private_json(PENDING_FILE)
-            except FileNotFoundError:
-                raise SystemExit("No active authorization") from None
-            if (
-                not isinstance(pending, dict)
-                or not isinstance(pending.get("state"), str)
-                or not pending["state"]
-                or type(pending.get("expires")) not in (int, float)
-                or not time.time() < pending["expires"] <= time.time() + AUTH_TIMEOUT + 1
-            ):
-                raise SystemExit("Authorization expired or invalid; please retry")
-            authentication_params(args.url, pending["state"])
-            if pending.get("accepting") is not True or CALLBACK_FILE.exists():
-                raise SystemExit("An authentication response has already been delivered")
-            atomic_write_private(CALLBACK_FILE, json.dumps({"url": args.url}))
-            close_callback_delivery()
+        pending = read_private_json(PENDING_FILE)
+    except FileNotFoundError:
+        raise SystemExit("No active authorization; run 'jagex-auth authorize'") from None
     except (OSError, ValueError):
-        raise SystemExit("Could not access authorization state safely; please retry") from None
+        raise SystemExit("Could not read authorization state; run 'jagex-auth authorize' again") from None
+    if not isinstance(pending, dict) or not isinstance(pending.get("state"), str) or not pending["state"]:
+        raise SystemExit("Invalid authorization state; run 'jagex-auth authorize' again")
+    authentication_params(args.url, pending["state"])
+    try:
+        atomic_write_private(CALLBACK_FILE, json.dumps({"url": args.url}))
+    except OSError:
+        raise SystemExit("Could not deliver the authentication response; please retry") from None
 
 
 def main() -> None:

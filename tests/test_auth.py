@@ -50,8 +50,6 @@ class AuthTestCase(unittest.TestCase):
             "CALLBACK_FILE": self.data / "auth-callback.json",
             "CREDENTIALS_FILE": self.data / "credentials.json",
             "PENDING_FILE": self.data / "pending.json",
-            "AUTH_LOCK": self.data / "authorize.lock",
-            "CALLBACK_LOCK": self.data / "callback.lock",
         }.items():
             self.enterContext(patch.object(auth, name, value))
         # Fail closed if a test unexpectedly reaches any real network/browser.

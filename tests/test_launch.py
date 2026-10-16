@@ -77,6 +77,21 @@ class LaunchTests(unittest.TestCase):
                 with self.assertRaisesRegex(SystemExit, "authorize"):
                     auth.read_credentials()
 
+    def test_written_credentials_fit_reader_limit(self):
+        values = {"version": 1, "JX_SESSION_ID": "", "JX_CHARACTER_ID": "character", "JX_DISPLAY_NAME": "A Name"}
+        overhead = len((json.dumps(values, ensure_ascii=False) + "\n").encode("utf-8"))
+        session = "s" * (65536 - overhead)
+        auth.write_credentials(session, self.account)
+        before = auth.CREDENTIALS_FILE.read_bytes()
+        self.assertEqual(len(before), 65536)
+        self.assertEqual(auth.read_credentials()["JX_SESSION_ID"], session)
+        for session_id, name in ((session + "s", "A Name"), ("s", "é" * 33000)):
+            with self.subTest(name_bytes=len(name.encode("utf-8"))):
+                with self.assertRaisesRegex(SystemExit, "too large"):
+                    auth.write_credentials(session_id, {**self.account, "displayName": name})
+                self.assertEqual(auth.CREDENTIALS_FILE.read_bytes(), before)
+                self.assertEqual(list(self.data.iterdir()), [auth.CREDENTIALS_FILE])
+
     def test_rejects_unsafe_files(self):
         auth.write_credentials("s", self.account)
         auth.CREDENTIALS_FILE.chmod(0o644)

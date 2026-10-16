@@ -27,6 +27,7 @@ ACCOUNTS_ENDPOINT = "https://auth.runescape.com/game-session/v2/accounts"
 ISSUER = "https://account.jagex.com/"
 AUTH_TIMEOUT = 300
 MAX_CALLBACK = 16384
+MAX_PRIVATE_JSON = 65536
 
 DATA_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "jagex-auth"
@@ -85,7 +86,7 @@ def request_json(
         raise SystemExit(f"HTTP {err.code} from {url}") from None
     except (urllib.error.URLError, TimeoutError):
         raise SystemExit(f"Request failed for {url}") from None
-    except (ValueError, UnicodeError) as err:
+    except (ValueError, RecursionError) as err:
         raise SystemExit(f"Invalid JSON from {url}") from err
     if not isinstance(result, (dict, list)):
         raise SystemExit(f"Invalid JSON from {url}")
@@ -417,16 +418,19 @@ def write_credentials(session_id: str, account: dict) -> None:
     }
     try:
         validate_credentials(values)
+        contents = json.dumps(values, ensure_ascii=False) + "\n"
+        if len(contents.encode("utf-8")) > MAX_PRIVATE_JSON:
+            raise SystemExit("Credentials too large; existing credentials were not replaced")
     except ValueError:
         raise SystemExit("Invalid session or selected character information") from None
     ensure_data_dir()
     try:
-        atomic_write_private(CREDENTIALS_FILE, json.dumps(values, ensure_ascii=False) + "\n")
+        atomic_write_private(CREDENTIALS_FILE, contents)
     except OSError:
         raise SystemExit("Could not save credentials; existing credentials were not replaced") from None
 
 
-def read_private_json(path: Path, limit: int = 65536):
+def read_private_json(path: Path, limit: int = MAX_PRIVATE_JSON):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "r", encoding="utf-8") as stream:
         info = os.fstat(stream.fileno())
@@ -440,7 +444,10 @@ def read_private_json(path: Path, limit: int = 65536):
         contents = stream.read(limit + 1)
         if len(contents) > limit:
             raise ValueError("Private file too large")
-        return json.loads(contents)
+        try:
+            return json.loads(contents)
+        except RecursionError:
+            raise ValueError("Private JSON nesting too deep") from None
 
 
 def read_credentials() -> dict[str, str]:

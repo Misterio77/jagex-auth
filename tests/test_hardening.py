@@ -180,6 +180,15 @@ class HardeningTests(unittest.TestCase):
         with patch.object(auth.HTTP_OPENER, "open", return_value=io.BytesIO(b"x" * 1048577)), self.assertRaises(SystemExit):
             auth.request_json("https://test.invalid")
 
+    def test_deeply_nested_json_is_rejected(self):
+        nested = "[" * 12000 + "0" + "]" * 12000
+        with patch.object(auth.HTTP_OPENER, "open", return_value=io.BytesIO(nested.encode())), self.assertRaises(SystemExit):
+            auth.get_game_session("synthetic-token")
+        auth.ensure_data_dir()
+        auth.atomic_write_private(auth.CREDENTIALS_FILE, nested)
+        with self.assertRaisesRegex(SystemExit, "Invalid or unsafe"):
+            auth.read_credentials()
+
     def test_redirects_never_forward_credentials(self):
         calls = []
 

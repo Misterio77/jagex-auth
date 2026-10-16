@@ -30,11 +30,10 @@ nonce. The browser response must be a state-bound URL, either exactly
 response in the fragment. Query parameters and alternate paths/origins are
 rejected. Raw-token paste is intentionally unsupported: it discards the URL's
 state binding. Duplicate parameters, provider errors, missing tokens, oversized
-inputs, and malformed input are rejected without echoing secrets. Manual terminal input
-has echo disabled while waiting and bypasses the terminal's bounded line buffer.
-Unread terminal input is discarded when restoring settings on completion,
-timeout, or cancellation, so unfinished secret pastes cannot pass back to the
-shell. A browser response already delivered wins over concurrent terminal input.
+inputs, and malformed input are rejected without echoing secrets. Manual terminal
+input uses the terminal's normal line editing, so a pasted URL is visible on
+screen and in scrollback; clear it if that matters to you. A browser response
+already delivered wins over concurrent terminal input.
 
 Before exchange, the helper strictly decodes the token and checks unverified
 claims for consistency: issuer, audience, integer expiration/issued-at/optional

@@ -11,7 +11,6 @@ import signal
 import stat
 import sys
 import tempfile
-import termios
 import time
 import urllib.error
 import urllib.parse
@@ -179,35 +178,6 @@ def callback_guard():
         yield
 
 
-@contextmanager
-def private_terminal_input():
-    try:
-        fd = sys.stdin.fileno()
-    except (AttributeError, ValueError, OSError):
-        fd = None
-    if fd is None or not os.isatty(fd):
-        yield
-        return
-    original = termios.tcgetattr(fd)
-    hidden = original.copy()
-    # Read long pastes ourselves instead of the terminal's bounded line buffer.
-    hidden[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON)
-    hidden[6] = original[6].copy()
-    hidden[6][termios.VMIN] = 1
-    hidden[6][termios.VTIME] = 0
-    try:
-        termios.tcsetattr(fd, termios.TCSANOW, hidden)
-        yield
-    finally:
-        # Never hand an unfinished secret paste back to the shell.
-        termios.tcsetattr(fd, termios.TCSAFLUSH, original)
-
-
-def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
-    with private_terminal_input():
-        return _wait_for_authentication(timeout)
-
-
 def consume_browser_callback() -> str | None:
     # Caller holds callback_guard. A delivered browser response wins over stdin.
     try:
@@ -221,8 +191,9 @@ def consume_browser_callback() -> str | None:
     return callback["url"]
 
 
-def _wait_for_authentication(timeout: float) -> str:
-    print("Waiting for browser callback; you can also paste the successful-login URL (input hidden):", file=sys.stderr)
+def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
+    # shortcut: canonical tty lines cap at 4095 bytes; callback URLs are ~1.5 KiB today. Revisit if they grow.
+    print("Waiting for browser callback; you can also paste the successful-login URL here:", file=sys.stderr)
     deadline = time.monotonic() + timeout
     buffer = b""
     try:

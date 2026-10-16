@@ -130,8 +130,4 @@ Never use real credentials in fixtures.
 
 [MIT](LICENSE), Copyright (c) 2026 Gabriel Fontes.
 
-Extracted from `pkgs/jagex-auth` in [Foundry](https://github.com/Misterio77/Foundry)
-after hardening and real-client acceptance. The first 21 commits replay the
-package-only snapshots at this repository's root; each records its original
-Foundry commit in a `Foundry-commit` trailer. Their hashes and replay timestamps
-differ from the originals; unrelated infrastructure history was not imported.
+Originally developed in [Foundry](https://github.com/Misterio77/Foundry).

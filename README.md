@@ -5,11 +5,9 @@ clients. Uses your normal browser, then starts a compatible client with the
 `JX_SESSION_ID`, `JX_CHARACTER_ID`, and `JX_DISPLAY_NAME` environment variables.
 It does not download/update clients or fix RS3's GTK2/OpenSSL dependencies.
 
-This project is being hardened in Foundry before standalone release. See
-[SECURITY.md](SECURITY.md) for the server-validation trust boundary and callback lifetime details,
-and `.agents/2026-10-16-refactor.md` for progress. Browser authorization and
-in-game login with RuneLite, HDOS, and RS3 were smoke-tested on 2026-10-16.
-It is not affiliated with Jagex.
+See [SECURITY.md](SECURITY.md) for the server-validation trust boundary and
+callback lifetime details. Browser authorization and in-game login with RuneLite,
+HDOS, and RS3 were smoke-tested on 2026-10-16. It is not affiliated with Jagex.
 
 ## Usage
 
@@ -54,18 +52,37 @@ python3 -m jagex_auth launch -- runelite
 Browser callback integration additionally requires installing an appropriate
 `.desktop` handler for `jagex-auth handle-url %u`. The Nix package supplies one.
 
-## Foundry / Nix
+## Nix
+
+From a checkout:
 
 ```sh
-nix build .#jagex-auth
+nix run . -- --help
+nix run . -- authorize
+nix build .
 ./result/bin/jagex-auth --help
+# Optional installation, including the desktop handler:
+nix profile add .
 ```
 
-Existing integration remains:
+The flake exposes `packages.<system>.{default,jagex-auth}` and matching apps for
+`x86_64-linux` and `aarch64-linux`. The package's `wrapLaunch` function wraps an
+existing client. Given a flake input named `jagex-auth`, a Home Manager module
+can use:
 
 ```nix
-pkgs.jagex-auth.wrapLaunch pkgs.runelite
+{inputs, pkgs, ...}: let
+  jagexAuth = inputs.jagex-auth.packages.${pkgs.stdenv.hostPlatform.system}.default;
+in {
+  home.packages = [
+    jagexAuth
+    (jagexAuth.wrapLaunch pkgs.runelite)
+  ];
+}
 ```
+
+The input can follow your own `nixpkgs` input to share the package set. Ordinary
+`pkgs.callPackage /path/to/jagex-auth {}` also works without using this flake.
 
 The returned package preserves the client's desktop files and wraps its main
 executable with `jagex-auth launch -- <original-executable>`. Authentication is
@@ -98,10 +115,23 @@ is not yet implemented; deleting local files does not revoke a server session.
 ```sh
 # -S disables site packages, demonstrating that tests need only the stdlib:
 PYTHONDONTWRITEBYTECODE=1 python3 -S -m unittest discover -s tests -v
-# From the Foundry root:
-nix build .#jagex-auth .#jagex-auth.passthru.tests.launch --no-link
+# Build the package (including Python tests) and fake-client wrapper check:
+nix flake check
+# Optional development environment and formatter:
+nix develop
+nix fmt ./flake.nix ./default.nix ./tests/wrapper.nix
 ```
 
 Tests use synthetic credentials and temporary directories, block unexpected
 network/browser calls, and exercise process launching without starting a game.
 Never use real credentials in fixtures.
+
+## License and provenance
+
+[MIT](LICENSE), Copyright (c) 2026 Gabriel Fontes.
+
+Extracted from `pkgs/jagex-auth` in [Foundry](https://github.com/Misterio77/Foundry)
+after hardening and real-client acceptance. The first 21 commits replay the
+package-only snapshots at this repository's root; each records its original
+Foundry commit in a `Foundry-commit` trailer. Their hashes and replay timestamps
+differ from the originals; unrelated infrastructure history was not imported.

@@ -6,6 +6,7 @@
   symlinkJoin,
   writeTextFile,
   jagex-auth,
+  clientLicense ? lib.licenses.mit,
 }: let
   executable = writeTextFile {
     name = "jagex-auth-test-client";
@@ -27,11 +28,14 @@
     pname = "test-client";
     version = "1";
     paths = [executable desktop];
-    meta.mainProgram = "test-client";
+    meta = {
+      mainProgram = "test-client";
+      license = clientLicense;
+    };
   };
   wrapped = jagex-auth.wrapLaunch client;
 in
-  runCommand "jagex-auth-wrapper-check" {} ''
+  runCommand "jagex-auth-wrapper-check" (assert wrapped.meta.license == clientLicense; {}) ''
     export HOME="$TMPDIR/home"
     export XDG_DATA_HOME="$HOME/.local/share"
     mkdir -p "$HOME"

@@ -11,7 +11,12 @@
     forAllSystems = nixpkgs.lib.genAttrs systems;
   in {
     packages = forAllSystems (system: let
-      jagex-auth = nixpkgs.legacyPackages.${system}.callPackage ./. {};
+      # Wrappers inherit client licensing; the consumer must permit the client itself.
+      pkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+      jagex-auth = pkgs.callPackage ./. {};
     in {
       inherit jagex-auth;
       default = jagex-auth;
@@ -28,9 +33,19 @@
       default = app;
     });
 
-    checks = forAllSystems (system: {
+    checks = forAllSystems (system: let
+      consumerPkgs = import nixpkgs {
+        inherit system;
+        config.allowUnfree = true;
+      };
+    in {
       package = self.packages.${system}.jagex-auth;
       launch = self.packages.${system}.jagex-auth.tests.launch;
+      unfree-launch = import ./tests/wrapper.nix {
+        inherit (consumerPkgs) lib makeDesktopItem python3 runCommand symlinkJoin writeTextFile;
+        jagex-auth = self.packages.${system}.jagex-auth;
+        clientLicense = consumerPkgs.lib.licenses.unfree;
+      };
     });
 
     devShells = forAllSystems (system: let

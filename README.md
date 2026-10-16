@@ -54,7 +54,14 @@ Browser callback integration additionally requires installing an appropriate
 
 ## Nix
 
-From a checkout:
+Run directly from GitHub:
+
+```sh
+nix run github:Misterio77/jagex-auth -- --help
+nix run github:Misterio77/jagex-auth -- authorize
+```
+
+Or from a checkout:
 
 ```sh
 nix run . -- --help
@@ -67,8 +74,18 @@ nix profile add .
 
 The flake exposes `packages.<system>.{default,jagex-auth}` and matching apps for
 `x86_64-linux` and `aarch64-linux`. The package's `wrapLaunch` function wraps an
-existing client. Given a flake input named `jagex-auth`, a Home Manager module
-can use:
+existing client. Add this input to your flake:
+
+```nix
+{
+  inputs.jagex-auth = {
+    url = "github:Misterio77/jagex-auth";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+}
+```
+
+A Home Manager module can then use:
 
 ```nix
 {inputs, pkgs, ...}: let

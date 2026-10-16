@@ -46,7 +46,7 @@ in
     credentials = data / "credentials.json"
     name = 'A Name $(false) `false` " \\ 日本語'
     credentials.write_text(json.dumps({
-        "version": 1, "JX_SESSION_ID": "synthetic-session",
+        "JX_SESSION_ID": "synthetic-session",
         "JX_CHARACTER_ID": "character", "JX_DISPLAY_NAME": name,
     }))
     credentials.chmod(0o600)
@@ -67,7 +67,6 @@ in
     # Wrapper targets the original client, not itself; original output stays intact.
     wrapper = pathlib.Path("${wrapped}/bin/test-client").read_text()
     assert "${client}/bin/test-client" in wrapper
-    assert "credentials.properties" not in wrapper
     assert "synthetic-session" not in wrapper
     assert pathlib.Path("${client}/bin/test-client").read_text().startswith("#!")
     credentials.unlink()

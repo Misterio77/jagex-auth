@@ -113,8 +113,8 @@ systems satisfy each client's runtime dependencies.
 ## Storage
 
 Credentials live in `$XDG_DATA_HOME/jagex-auth/credentials.json`, defaulting to
-`~/.local/share/jagex-auth/credentials.json`. The schema has `version: 1` and the
-three `JX_*` fields. The directory is private (`0700`); credential files are
+`~/.local/share/jagex-auth/credentials.json`. The file holds the three `JX_*`
+fields; unknown keys are ignored. The directory is private (`0700`); credential files are
 created private (`0600`) and replaced atomically. Unsafe credential file types,
 symlinks, files owned by another user, and group/world permissions are rejected.
 

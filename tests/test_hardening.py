@@ -5,7 +5,6 @@ from email.message import Message
 import io
 import json
 import os
-import signal
 import subprocess
 import sys
 import unittest
@@ -76,33 +75,24 @@ class HardeningTests(AuthTestCase):
             with self.subTest(value=value[:70]), self.assertRaises(SystemExit):
                 auth.authentication_params(value, "s")
 
-    def test_unsolicited_mismatched_and_repeated_callbacks(self):
-        with self.assertRaisesRegex(SystemExit, "No active"):
-            self.handle(self.callback(state="s", id_token="id"))
-        auth.ensure_data_dir()
-        auth.atomic_write_private(auth.PENDING_FILE, "[]")
-        with self.assertRaisesRegex(SystemExit, "Invalid authorization state"):
-            self.handle(self.callback(state="s", id_token="id"))
+    def test_callbacks_are_validated_by_the_authorizer(self):
+        with self.assertRaisesRegex(SystemExit, "too large"):
+            self.handle("x" * (auth.MAX_CALLBACK + 1))
         with auth.authorization_attempt() as (state, _):
+            self.handle(self.callback(state="wrong", id_token="id"))  # The handler does not check state.
             with self.assertRaisesRegex(SystemExit, "state mismatch"):
-                self.handle(self.callback(state="wrong", id_token="id"))
-            self.assertFalse(auth.CALLBACK_FILE.exists())
+                auth.authentication_params(auth.wait_for_authentication(timeout=1), state)
             self.handle(self.callback(state=state, id_token="first"))
             latest = self.callback(state=state, id_token="second")
             self.handle(latest)  # Last delivery wins; nothing is locked.
             self.assertEqual(auth.wait_for_authentication(timeout=1), latest)
             self.assertFalse(auth.CALLBACK_FILE.exists())
 
-    def test_new_attempt_replaces_stale_state(self):
-        # A killed authorizer leaves files behind; the next attempt replaces them.
-        auth.ensure_data_dir()
-        auth.atomic_write_private(auth.PENDING_FILE, json.dumps({"state": "stale"}))
-        auth.atomic_write_private(auth.CALLBACK_FILE, json.dumps({"url": "stale"}))
-        with auth.authorization_attempt() as (state, _):
-            self.assertNotEqual(state, "stale")
-            self.assertEqual(auth.read_private_json(auth.PENDING_FILE), {"state": state})
+    def test_new_attempt_discards_stale_callback(self):
+        self.handle(self.callback(state="stale", id_token="id"))  # No authorizer running.
+        self.assertTrue(auth.CALLBACK_FILE.exists())
+        with auth.authorization_attempt():
             self.assertFalse(auth.CALLBACK_FILE.exists())
-        self.assertFalse(auth.PENDING_FILE.exists())
 
     def test_closed_stdin_timeout_and_cleanup(self):
         class NoStdin:
@@ -111,7 +101,6 @@ class HardeningTests(AuthTestCase):
         with self.assertRaisesRegex(SystemExit, "timed out"):
             with auth.authorization_attempt(), patch.object(auth.sys, "stdin", NoStdin()):
                 auth.wait_for_authentication(timeout=0.02)
-        self.assertFalse(auth.PENDING_FILE.exists())
         self.assertFalse(auth.CALLBACK_FILE.exists())
 
     def test_partial_stdin_is_bounded_and_manual_url_works(self):
@@ -133,7 +122,6 @@ class HardeningTests(AuthTestCase):
             with patch.object(auth, "open_browser", side_effect=failure), self.assertRaises(SystemExit):
                 auth.authorize(None)
             self.assertEqual(auth.CREDENTIALS_FILE.read_bytes(), before)
-            self.assertFalse(auth.PENDING_FILE.exists())
             self.assertFalse(auth.CALLBACK_FILE.exists())
 
     def test_http_errors_do_not_echo_secrets(self):
@@ -192,7 +180,6 @@ class HardeningTests(AuthTestCase):
             auth.authorize(None)
         self.assertNotIn("unchanged", str(caught.exception))
         self.assertEqual(auth.read_credentials()["JX_SESSION_ID"], "new-session")
-        self.assertFalse(auth.PENDING_FILE.exists())
 
     def test_invalid_manual_input_is_rejected(self):
         read, write = os.pipe()
@@ -205,20 +192,6 @@ class HardeningTests(AuthTestCase):
                     with self.assertRaisesRegex(SystemExit, message):
                         auth.wait_for_authentication(timeout=1)
 
-    def test_initialization_interruption_cleans_published_state(self):
-        original = auth.atomic_write_private
-
-        def publish_then_interrupt(path, contents):
-            original(path, contents)
-            if path == auth.PENDING_FILE:
-                raise KeyboardInterrupt()
-
-        with patch.object(auth, "atomic_write_private", side_effect=publish_then_interrupt), self.assertRaises(KeyboardInterrupt):
-            with auth.authorization_attempt():
-                self.fail("Initialization should have been interrupted")
-        self.assertFalse(auth.PENDING_FILE.exists())
-        self.assertFalse(auth.CALLBACK_FILE.exists())
-
     def test_terminal_paste_is_read_as_one_line(self):
         master, slave = os.openpty()
         self.addCleanup(os.close, master)
@@ -229,23 +202,11 @@ class HardeningTests(AuthTestCase):
             os.write(master, url.encode() + b"\n")
             self.assertEqual(auth.wait_for_authentication(timeout=1), url)
 
-    def test_sigterm_cleans_attempt_and_restores_handler(self):
-        previous = signal.getsignal(signal.SIGTERM)
-        with self.assertRaises(SystemExit) as caught:
-            with auth.cancellation_signals(), auth.authorization_attempt():
-                os.kill(os.getpid(), signal.SIGTERM)
-        self.assertEqual(caught.exception.code, 143)
-        self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
-        self.assertFalse(auth.PENDING_FILE.exists())
-
     def test_cross_process_callback_delivery(self):
         with auth.authorization_attempt() as (state, _):
             result = subprocess.run([sys.executable, "-m", "jagex_auth", "handle-url", self.callback(state=state, id_token="id")], env=self.env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("id_token=id", auth.wait_for_authentication(timeout=1))
-        result = subprocess.run([sys.executable, "-m", "jagex_auth", "handle-url", self.callback(state="s", id_token="id")], env=self.env, capture_output=True, text=True, timeout=10)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("No active authorization", result.stderr)
 
 
 if __name__ == "__main__":

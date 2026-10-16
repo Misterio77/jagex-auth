@@ -50,7 +50,6 @@ class AuthTestCase(unittest.TestCase):
             "DATA_DIR": self.data,
             "CALLBACK_FILE": self.data / "auth-callback.json",
             "CREDENTIALS_FILE": self.data / "credentials.json",
-            "PENDING_FILE": self.data / "pending.json",
         }.items():
             self.enterContext(patch.object(auth, name, value))
         # Fail closed if a test unexpectedly reaches any real network/browser.
@@ -106,7 +105,7 @@ class AuthTests(AuthTestCase):
 
     def test_request_json_serializes_request(self):
         with patch.object(auth.HTTP_OPENER, "open", return_value=io.BytesIO(b'{"ok": true}')) as request:
-            self.assertEqual(auth.request_json("https://test.invalid", method="POST", body={"x": 1}), {"ok": True})
+            self.assertEqual(auth.request_json("https://test.invalid", body={"x": 1}), {"ok": True})
         args, kwargs = request.call_args
         self.assertEqual(args[0].method, "POST")
         self.assertEqual(json.loads(args[0].data), {"x": 1})
@@ -123,7 +122,7 @@ class AuthTests(AuthTestCase):
     def test_session_and_accounts(self):
         with patch.object(auth, "request_json", return_value={"sessionId": "session"}) as request:
             self.assertEqual(auth.get_game_session("id"), "session")
-            request.assert_called_once_with(auth.SESSION_ENDPOINT, method="POST", body={"idToken": "id"})
+            request.assert_called_once_with(auth.SESSION_ENDPOINT, body={"idToken": "id"})
         accounts = [{"accountId": "character", "displayName": "Name"}]
         with patch.object(auth, "request_json", return_value=accounts) as request:
             self.assertEqual(auth.get_accounts("session"), accounts)
@@ -181,7 +180,6 @@ class AuthTests(AuthTestCase):
             self.assertEqual(stat.S_IMODE(auth.CALLBACK_FILE.stat().st_mode), 0o600)
             self.assertEqual(auth.wait_for_authentication(), url)
             self.assertFalse(auth.CALLBACK_FILE.exists())
-        self.assertFalse(auth.PENDING_FILE.exists())
 
     def test_authorize_flow(self):
         payload = {"nonce": "nonce", "sub": "subject", "nickname": "User"}

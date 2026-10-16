@@ -61,22 +61,21 @@ before launch; reauthorize when the client rejects a session.
 
 ## Callback lifetime
 
-There is no locking. One authorization at a time is assumed; if two overlap,
-the one that finishes last wins, and a newer attempt replaces older pending
-state. The authorizer writes its private state before opening the browser.
-`handle-url` reads that state, validates the URL's state binding, and writes
-the response for the authorizer to pick up; a later delivery overwrites an
-earlier one. Both input paths then undergo the same token checks in the
-authorizer. The callback wait expires after five minutes, even with closed
-stdin or a partially typed line. HTTP operations have separate 30-second
-socket timeouts; character selection is interactive and is not covered by the
-browser callback deadline.
+There is no locking or shared state between processes beyond one private
+file. One authorization at a time is assumed; if two overlap, the one that
+finishes last wins. `handle-url` only writes the browser's URL to that file;
+it runs without a terminal, so it does no validation of its own. The
+authorizer discards any leftover file when it starts, then polls for a new one
+or a pasted line, and applies the same state and nonce checks to both. A later
+delivery overwrites an earlier one. The wait expires after five minutes, even
+with closed stdin or a partially typed line. HTTP operations have separate
+30-second socket timeouts; character selection is interactive and is not
+covered by that deadline.
 
-Normal completion, exceptions, Ctrl-C, and SIGTERM remove pending/callback
-files. SIGKILL or power loss can leave them; a callback delivered against that
-stale state is simply discarded by the next authorization, which starts fresh.
-As with any atomic commit, cancellation after credentials were replaced cannot
-promise the prior credentials are still installed.
+Normal completion, exceptions, and Ctrl-C remove the callback file. SIGKILL,
+SIGTERM, or power loss can leave it behind; the next authorization starts
+fresh. As with any atomic commit, cancellation after credentials were replaced
+cannot promise the prior credentials are still installed.
 
 ## Local trust boundary
 

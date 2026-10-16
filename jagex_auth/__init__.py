@@ -5,7 +5,6 @@ import json
 import os
 import secrets
 import select
-import signal
 import stat
 import sys
 import tempfile
@@ -29,7 +28,6 @@ DATA_DIR = (
     Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "jagex-auth"
 )
 CALLBACK_FILE = DATA_DIR / "auth-callback.json"
-PENDING_FILE = DATA_DIR / "pending.json"
 CREDENTIALS_FILE = DATA_DIR / "credentials.json"
 CREDENTIAL_KEYS = ("JX_SESSION_ID", "JX_CHARACTER_ID", "JX_DISPLAY_NAME")
 
@@ -51,7 +49,6 @@ HTTP_OPENER = urllib.request.build_opener(NoRedirects())
 def request_json(
     url: str,
     *,
-    method: str = "GET",
     body: dict | None = None,
     headers: dict[str, str] | None = None,
 ) -> dict | list:
@@ -64,7 +61,7 @@ def request_json(
         url,
         data=data,
         headers=request_headers,
-        method=method,
+        method="POST" if body is not None else "GET",
     )
     try:
         with HTTP_OPENER.open(request, timeout=30) as response:
@@ -102,21 +99,15 @@ def open_browser(url: str) -> None:
         print(f"Open this URL manually:\n{url}", file=sys.stderr)
 
 
-def response_url(value: str) -> urllib.parse.ParseResult:
+def authentication_params(value: str, expected_state: str) -> dict[str, str]:
     if not isinstance(value, str) or len(value) > MAX_CALLBACK or any(ord(c) < 32 for c in value):
         raise SystemExit("Invalid Jagex authentication response")
     try:
         parsed = urllib.parse.urlparse(value)
     except ValueError:
         raise SystemExit("Invalid Jagex authentication response") from None
-    origin = parsed._replace(fragment="").geturl()
-    if origin not in {"rshub://auth/callback", REDIRECT_URI}:
+    if parsed._replace(fragment="").geturl() not in {"rshub://auth/callback", REDIRECT_URI}:
         raise SystemExit("Invalid Jagex authentication response URL")
-    return parsed
-
-
-def authentication_params(value: str, expected_state: str) -> dict[str, str]:
-    parsed = response_url(value)
     try:
         pairs = urllib.parse.parse_qsl(
             parsed.fragment, keep_blank_values=True, strict_parsing=True,
@@ -149,7 +140,7 @@ def wait_for_authentication(timeout: float = AUTH_TIMEOUT) -> str:
         stdin = None
     while time.monotonic() < deadline:
         try:
-            callback = read_private_json(CALLBACK_FILE, MAX_CALLBACK * 2)
+            callback = read_private_json(CALLBACK_FILE)
         except FileNotFoundError:
             callback = None
         if callback is not None:
@@ -198,11 +189,7 @@ def check_nonce(token: str, nonce: str) -> None:
 
 
 def get_game_session(id_token: str) -> str:
-    result = request_json(
-        SESSION_ENDPOINT,
-        method="POST",
-        body={"idToken": id_token},
-    )
+    result = request_json(SESSION_ENDPOINT, body={"idToken": id_token})
     session_id = result.get("sessionId") if isinstance(result, dict) else None
     if not isinstance(session_id, str) or not session_id or any(ord(c) < 32 for c in session_id):
         raise SystemExit("Jagex did not return a game session ID")
@@ -210,10 +197,7 @@ def get_game_session(id_token: str) -> str:
 
 
 def get_accounts(session_id: str) -> list[dict]:
-    result = request_json(
-        ACCOUNTS_ENDPOINT,
-        headers={"Authorization": f"Bearer {session_id}"},
-    )
+    result = request_json(ACCOUNTS_ENDPOINT, headers={"Authorization": f"Bearer {session_id}"})
     if not isinstance(result, list) or not result:
         raise SystemExit("No RuneScape characters found")
     if any(
@@ -255,15 +239,10 @@ def choose_account(accounts: list[dict]) -> dict:
 
 
 def validate_credentials(value: object) -> dict[str, str]:
-    if (
-        not isinstance(value, dict)
-        or type(value.get("version")) is not int
-        or value["version"] != 1
-        or set(value) != {"version", *CREDENTIAL_KEYS}
-        or any(
-            not isinstance(value[key], str) or not value[key] or "\0" in value[key]
-            for key in CREDENTIAL_KEYS
-        )
+    # NUL cannot go in an environment variable; extra keys are ignored.
+    if not isinstance(value, dict) or any(
+        not isinstance(value.get(key), str) or not value[key] or "\0" in value[key]
+        for key in CREDENTIAL_KEYS
     ):
         raise ValueError("Invalid credential schema")
     return {key: value[key] for key in CREDENTIAL_KEYS}
@@ -285,7 +264,6 @@ def atomic_write_private(path: Path, contents: str) -> None:
 
 def write_credentials(session_id: str, account: dict) -> None:
     values = {
-        "version": 1,
         "JX_SESSION_ID": session_id,
         "JX_CHARACTER_ID": account.get("accountId"),
         "JX_DISPLAY_NAME": account.get("displayName"),
@@ -304,7 +282,7 @@ def write_credentials(session_id: str, account: dict) -> None:
         raise SystemExit("Could not save credentials; existing credentials were not replaced") from None
 
 
-def read_private_json(path: Path, limit: int = MAX_PRIVATE_JSON):
+def read_private_json(path: Path):
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(fd, "r", encoding="utf-8") as stream:
         info = os.fstat(stream.fileno())
@@ -312,11 +290,11 @@ def read_private_json(path: Path, limit: int = MAX_PRIVATE_JSON):
             not stat.S_ISREG(info.st_mode)
             or info.st_uid != os.getuid()
             or info.st_mode & 0o077
-            or info.st_size > limit
+            or info.st_size > MAX_PRIVATE_JSON
         ):
             raise ValueError("Unsafe or oversized private file")
-        contents = stream.read(limit + 1)
-        if len(contents) > limit:
+        contents = stream.read(MAX_PRIVATE_JSON + 1)
+        if len(contents) > MAX_PRIVATE_JSON:
             raise ValueError("Private file too large")
         try:
             return json.loads(contents)
@@ -353,33 +331,18 @@ def launch(args: argparse.Namespace) -> None:
 
 @contextmanager
 def authorization_attempt():
-    # No locking: one authorization at a time is assumed, and a newer attempt replaces older state.
+    # No locking: one authorization at a time is assumed; a new attempt discards any stale callback.
     ensure_data_dir()
+    CALLBACK_FILE.unlink(missing_ok=True)
     try:
-        CALLBACK_FILE.unlink(missing_ok=True)
-        state, nonce = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
-        atomic_write_private(PENDING_FILE, json.dumps({"state": state}))
-        yield state, nonce
+        yield secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     finally:
-        PENDING_FILE.unlink(missing_ok=True)
         CALLBACK_FILE.unlink(missing_ok=True)
-
-
-@contextmanager
-def cancellation_signals():
-    def terminate(signum, _frame):
-        raise SystemExit(128 + signum)
-
-    previous = signal.signal(signal.SIGTERM, terminate)
-    try:
-        yield
-    finally:
-        signal.signal(signal.SIGTERM, previous)
 
 
 def authorize(_args: argparse.Namespace) -> None:
     try:
-        with cancellation_signals(), authorization_attempt() as (state, nonce):
+        with authorization_attempt() as (state, nonce):
             print("Opening Jagex login in your browser.", file=sys.stderr)
             open_browser(make_auth_url(state, nonce))
             params = authentication_params(wait_for_authentication(), state)
@@ -395,19 +358,14 @@ def authorize(_args: argparse.Namespace) -> None:
 
 
 def handle_url(args: argparse.Namespace) -> None:
+    # The browser runs this with no terminal; the authorizer validates the URL when it picks it up.
+    if len(args.url) > MAX_CALLBACK:
+        raise SystemExit("Authentication response too large")
     try:
-        pending = read_private_json(PENDING_FILE)
-    except FileNotFoundError:
-        raise SystemExit("No active authorization; run 'jagex-auth authorize'") from None
-    except (OSError, ValueError):
-        raise SystemExit("Could not read authorization state; run 'jagex-auth authorize' again") from None
-    if not isinstance(pending, dict) or not isinstance(pending.get("state"), str) or not pending["state"]:
-        raise SystemExit("Invalid authorization state; run 'jagex-auth authorize' again")
-    authentication_params(args.url, pending["state"])
-    try:
+        ensure_data_dir()
         atomic_write_private(CALLBACK_FILE, json.dumps({"url": args.url}))
     except OSError:
-        raise SystemExit("Could not deliver the authentication response; please retry") from None
+        raise SystemExit("Could not deliver the authentication response") from None
 
 
 def main() -> None:

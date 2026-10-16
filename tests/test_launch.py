@@ -55,8 +55,8 @@ class LaunchTests(AuthTestCase):
 
     def test_invalid_schema(self):
         auth.ensure_data_dir()
-        for value in ({}, [], {"version": True}, {"version": 2}, {
-            "version": 1, "JX_SESSION_ID": "s", "JX_CHARACTER_ID": "c", "JX_DISPLAY_NAME": "\0",
+        for value in ({}, [], {"JX_SESSION_ID": "s", "JX_CHARACTER_ID": "c"}, {
+            "JX_SESSION_ID": "s", "JX_CHARACTER_ID": "c", "JX_DISPLAY_NAME": "\0",
         }):
             with self.subTest(value=value):
                 auth.atomic_write_private(auth.CREDENTIALS_FILE, json.dumps(value))
@@ -64,7 +64,7 @@ class LaunchTests(AuthTestCase):
                     auth.read_credentials()
 
     def test_written_credentials_fit_reader_limit(self):
-        values = {"version": 1, "JX_SESSION_ID": "", "JX_CHARACTER_ID": "character", "JX_DISPLAY_NAME": "A Name"}
+        values = {"JX_SESSION_ID": "", "JX_CHARACTER_ID": "character", "JX_DISPLAY_NAME": "A Name"}
         overhead = len((json.dumps(values, ensure_ascii=False) + "\n").encode("utf-8"))
         session = "s" * (65536 - overhead)
         auth.write_credentials(session, self.account)
